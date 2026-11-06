@@ -83,7 +83,10 @@ class _FloatingMouseWidgetsState extends State<FloatingMouseWidgets> {
           cursorModel: _cursorModel,
         ),
         if (virtualMouseMode.showVirtualJoystick)
-          VirtualJoystick(cursorModel: _cursorModel),
+          VirtualJoystick(
+            cursorModel: _cursorModel,
+            inputModel: _inputModel,
+          ),
         FloatingLeftRightButton(
           isLeft: true,
           inputModel: _inputModel,
@@ -369,6 +372,8 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
   Offset _position = Offset.zero;
   bool _isInitialized = false;
   bool _isDown = false;
+  Object? _activePress;
+  bool _remoteButtonDown = false;
   Rect? _lastBlockedRect;
 
   Orientation? _previousOrientation;
@@ -395,6 +400,11 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
 
   @override
   void dispose() {
+    _activePress = null;
+    if (_remoteButtonDown) {
+      _remoteButtonDown = false;
+      _inputModel.tapUp(_isLeft ? MouseButtons.left : MouseButtons.right);
+    }
     if (_lastBlockedRect != null) {
       _cursorModel.removeBlockedRect(_lastBlockedRect!);
     }
@@ -566,6 +576,8 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
       child: Listener(
         onPointerMove: _onBodyPointerMoveUpdate,
         onPointerDown: (event) async {
+          final press = Object();
+          _activePress = press;
           _isDragging = false;
           setState(() {
             _isDown = true;
@@ -576,6 +588,8 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
             isSpecialHoldDragActive = true;
             () async {
               await _cursorModel.syncCursorPosition();
+              if (!mounted || !identical(_activePress, press)) return;
+              _remoteButtonDown = true;
               await _inputModel
                   .tapDown(_isLeft ? MouseButtons.left : MouseButtons.right);
             }();
@@ -583,6 +597,8 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
           });
         },
         onPointerUp: (event) {
+          if (!mounted) return;
+          _activePress = null;
           _cursorModel.blockEvents = false;
           setState(() {
             _isDown = false;
@@ -601,8 +617,8 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
                         }));
           } else {
             // If it's not a quick tap, it could be a hold or drag.
-            // If it was a hold, isSpecialHoldDragActive is true.
-            if (isSpecialHoldDragActive) {
+            if (_remoteButtonDown) {
+              _remoteButtonDown = false;
               _inputModel
                   .tapUp(_isLeft ? MouseButtons.left : MouseButtons.right);
             }
@@ -614,13 +630,16 @@ class _FloatingLeftRightButtonState extends State<FloatingLeftRightButton> {
           isSpecialHoldDragActive = false;
         },
         onPointerCancel: (event) {
+          if (!mounted) return;
+          _activePress = null;
           _cursorModel.blockEvents = false;
           setState(() {
             _isDown = false;
           });
           _tapDownTimer?.cancel();
           _tapDownTimer = null;
-          if (isSpecialHoldDragActive) {
+          if (_remoteButtonDown) {
+            _remoteButtonDown = false;
             _inputModel.tapUp(_isLeft ? MouseButtons.left : MouseButtons.right);
           }
           isSpecialHoldDragActive = false;
@@ -674,12 +693,18 @@ class _QuarterCirclePainter extends CustomPainter {
   bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
 
-// Virtual joystick sends the absolute movement for now.
-// Maybe we need to change it to relative movement in the future.
+// Virtual joystick can send either absolute movement (via updatePan)
+// or relative movement (via sendMobileRelativeMouseMove) depending on the
+// InputModel.relativeMouseMode setting.
 class VirtualJoystick extends StatefulWidget {
   final CursorModel cursorModel;
+  final InputModel inputModel;
 
-  const VirtualJoystick({super.key, required this.cursorModel});
+  const VirtualJoystick({
+    super.key,
+    required this.cursorModel,
+    required this.inputModel,
+  });
 
   @override
   State<VirtualJoystick> createState() => _VirtualJoystickState();
@@ -694,12 +719,19 @@ class _VirtualJoystickState extends State<VirtualJoystick> {
   final double _moveStep = 3.0;
   final double _speed = 1.0;
 
+  /// Scale factor for relative mouse movement sensitivity.
+  /// Higher values result in faster cursor movement on the remote machine.
+  static const double _kRelativeMouseScale = 3.0;
+
   // One-shot timer to detect a drag gesture
   Timer? _dragStartTimer;
   // Periodic timer for continuous movement
   Timer? _continuousMoveTimer;
   Size? _lastScreenSize;
   bool _isPressed = false;
+
+  /// Check if relative mouse mode is enabled.
+  bool get _useRelativeMouse => widget.inputModel.relativeMouseMode.value;
 
   @override
   void initState() {
@@ -746,6 +778,18 @@ class _VirtualJoystickState extends State<VirtualJoystick> {
     );
   }
 
+  /// Send movement delta to remote machine.
+  /// Uses relative mouse mode if enabled, otherwise uses absolute updatePan.
+  void _sendMovement(Offset delta) {
+    if (_useRelativeMouse) {
+      widget.inputModel.sendMobileRelativeMouseMove(
+          delta.dx * _kRelativeMouseScale, delta.dy * _kRelativeMouseScale);
+    } else {
+      // In absolute mode, use cursorModel.updatePan which tracks position.
+      widget.cursorModel.updatePan(delta, Offset.zero, false);
+    }
+  }
+
   void _stopSendEventTimer() {
     _dragStartTimer?.cancel();
     _continuousMoveTimer?.cancel();
@@ -773,7 +817,7 @@ class _VirtualJoystickState extends State<VirtualJoystick> {
           //    The movement is small for a gentle start.
           final initialDelta = _offsetToPanDelta(_offset);
           if (initialDelta.distance > 0) {
-            widget.cursorModel.updatePan(initialDelta, Offset.zero, false);
+            _sendMovement(initialDelta);
           }
 
           // 2. Start a one-shot timer to check if the user is holding for a drag.
@@ -784,10 +828,7 @@ class _VirtualJoystickState extends State<VirtualJoystick> {
             _continuousMoveTimer =
                 periodic_immediate(const Duration(milliseconds: 20), () async {
               if (_offset != Offset.zero) {
-                widget.cursorModel.updatePan(
-                    _offsetToPanDelta(_offset) * _moveStep * _speed,
-                    Offset.zero,
-                    false);
+                _sendMovement(_offsetToPanDelta(_offset) * _moveStep * _speed);
               }
             });
           });

@@ -97,6 +97,7 @@ class _ViewCameraTabPageState extends State<ViewCameraTabPage> {
           display: display,
           displays: displays?.cast<int>(),
           password: params['password'],
+          loginMethod: params['loginMethod'] ?? '',
           toolbarState: ToolbarState(),
           tabController: tabController,
           connToken: params['connToken'],
@@ -250,11 +251,11 @@ class _ViewCameraTabPageState extends State<ViewCameraTabPage> {
       MenuEntryButton<String>(
         childBuilder: (TextStyle? style) => Obx(() => Text(
               translate(
-                  toolbarState.show.isTrue ? 'Hide Toolbar' : 'Show Toolbar'),
+                  toolbarState.hide.isTrue ? 'Show Toolbar' : 'Hide Toolbar'),
               style: style,
             )),
         proc: () {
-          toolbarState.switchShow(sessionId);
+          toolbarState.switchHide(sessionId);
           cancelFunc();
         },
         padding: padding,
@@ -433,6 +434,7 @@ class _ViewCameraTabPageState extends State<ViewCameraTabPage> {
           display: display,
           displays: displays?.cast<int>(),
           password: args['password'],
+          loginMethod: args['loginMethod'] ?? '',
           toolbarState: ToolbarState(),
           tabController: tabController,
           connToken: args['connToken'],

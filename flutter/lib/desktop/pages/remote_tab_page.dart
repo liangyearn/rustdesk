@@ -97,6 +97,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           display: display,
           displays: displays?.cast<int>(),
           password: params['password'],
+          loginMethod: params['loginMethod'] ?? '',
           toolbarState: ToolbarState(),
           tabController: tabController,
           switchUuid: params['switch_uuid'],
@@ -135,7 +136,13 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       body: DesktopTab(
         controller: tabController,
         onWindowCloseButton: handleWindowCloseButton,
-        tail: const AddButton(),
+        tail: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _RelativeMouseModeHint(tabController: tabController),
+            const AddButton(),
+          ],
+        ),
         selectedBorderColor: MyTheme.accent,
         pageViewBuilder: (pageView) => pageView,
         labelGetter: DesktopTab.tablabelGetter,
@@ -251,11 +258,11 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       MenuEntryButton<String>(
         childBuilder: (TextStyle? style) => Obx(() => Text(
               translate(
-                  toolbarState.show.isTrue ? 'Hide Toolbar' : 'Show Toolbar'),
+                  toolbarState.hide.isTrue ? 'Show Toolbar' : 'Hide Toolbar'),
               style: style,
             )),
         proc: () {
-          toolbarState.switchShow(sessionId);
+          toolbarState.switchHide(sessionId);
           cancelFunc();
         },
         padding: padding,
@@ -374,6 +381,8 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       loopCloseWindow();
     }
     ConnectionTypeState.delete(id);
+    // Clean up relative mouse mode state for this peer.
+    stateGlobal.relativeMouseModeState.remove(id);
     _update_remote_count();
   }
 
@@ -462,6 +471,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           display: display,
           displays: displays?.cast<int>(),
           password: args['password'],
+          loginMethod: args['loginMethod'] ?? '',
           toolbarState: ToolbarState(),
           tabController: tabController,
           switchUuid: switchUuid,
@@ -505,15 +515,17 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
       final args = jsonDecode(call.arguments);
       final id = args['id'];
       final close = args['close'];
+      RemotePage? remotePage;
       try {
-        final remotePage = tabController.state.value.tabs
+        remotePage = tabController.state.value.tabs
             .firstWhere((tab) => tab.key == id)
             .page as RemotePage;
         returnValue = remotePage.ffi.ffiModel.cachedPeerData.toString();
       } catch (e) {
         debugPrint('Failed to get cached session data: $e');
       }
-      if (close && returnValue != null) {
+      if (close && returnValue != null && remotePage != null) {
+        remotePage.releaseMacOSInputForTabTransfer();
         closeSessionOnDispose[id] = false;
         tabController.closeBy(id);
       }
@@ -546,5 +558,71 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
     }
     _update_remote_count();
     return returnValue;
+  }
+}
+
+/// A widget that displays a hint in the tab bar when relative mouse mode is active.
+/// This helps users remember how to exit relative mouse mode.
+class _RelativeMouseModeHint extends StatelessWidget {
+  final DesktopTabController tabController;
+
+  const _RelativeMouseModeHint({Key? key, required this.tabController})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      // Check if there are any tabs
+      if (tabController.state.value.tabs.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      // Get current selected tab's RemotePage
+      final selectedTabInfo = tabController.state.value.selectedTabInfo;
+      if (selectedTabInfo.page is! RemotePage) {
+        return const SizedBox.shrink();
+      }
+
+      final remotePage = selectedTabInfo.page as RemotePage;
+      final String peerId = remotePage.id;
+
+      // Use global state to check relative mouse mode (synced from InputModel).
+      // This avoids timing issues with FFI registration.
+      final isRelativeMouseMode =
+          stateGlobal.relativeMouseModeState[peerId] ?? false;
+
+      if (!isRelativeMouseMode) {
+        return const SizedBox.shrink();
+      }
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        margin: const EdgeInsets.only(right: 8),
+        decoration: BoxDecoration(
+          color: Colors.orange.withOpacity(0.2),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.orange.withOpacity(0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.mouse,
+              size: 14,
+              color: Colors.orange[700],
+            ),
+            const SizedBox(width: 4),
+            Text(
+              translate(
+                  'rel-mouse-exit-{${isMacOS ? "Cmd+G" : "Ctrl+Alt"}}-tip'),
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.orange[700],
+              ),
+            ),
+          ],
+        ),
+      );
+    });
   }
 }
